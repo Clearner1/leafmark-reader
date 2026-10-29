@@ -252,3 +252,12 @@
   .lm-nav-group, .lm-selection-tools, .lm-annotation-tools { border-color: ButtonText; background: Canvas; box-shadow: none; }
   :is(.lm-view, .lm-selection-tools, .lm-annotation-tools, .lm-thought-dialog) button.lm-button.lm-primary { border-color: Highlight; background: Highlight; color: HighlightText; }
 }
+
+.lm-support-codes { display:flex; flex-wrap:wrap; gap:24px; margin:16px 0; }
+.lm-support-card { flex:0 1 220px; min-width:160px; text-align:center; }
+.lm-support-card h3 { font-size:15px; margin:0 0 12px; }
+.lm-support-card button.lm-support-code { display:block; width:100%; height:auto; padding:0; background:white; border:1px solid var(--background-modifier-border); border-radius:12px; overflow:hidden; cursor:zoom-in; }
+.lm-support-code img { display:block; width:100%; height:auto; }
+.lm-support-code:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:4px; }
+.lm-support-modal { text-align:center; }
+.lm-support-modal img { display:block; max-width:100%; max-height:70vh; width:auto; height:auto; margin:auto; object-fit:contain; }

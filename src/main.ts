@@ -1,4 +1,6 @@
-import { Plugin, TFile, FuzzySuggestModal, Notice, PluginSettingTab, Setting, getLanguage } from 'obsidian';
+import wechatQr from '../assets/weixinpay.png';
+import alipayQr from '../assets/alipay.jpg';
+import { Plugin, TFile, FuzzySuggestModal, Notice, PluginSettingTab, Setting, Modal, getLanguage } from 'obsidian';
 import { LeafmarkStore } from './store';
 import { CanvasService } from './canvas';
 import { vaultPath, isCfi } from './model';
@@ -79,6 +81,20 @@ class ReaderSettings extends PluginSettingTab {
     new Setting(this.containerEl).setName(t('language')).setDesc(t('languageDescription')).addDropdown(c=>c.addOptions({auto:t('followObsidian'),zh:'中文',en:'English'}).setValue(this.plugin.preferences.language).onChange(async v=>{this.plugin.preferences.language=v as LanguagePreference;await this.plugin.savePreferences();this.display();}));
     new Setting(this.containerEl).setName(t('fontSize')).addSlider(c=>c.setLimits(14,30,1).setValue(this.plugin.preferences.fontSize).setDynamicTooltip().onChange(async v=>{this.plugin.preferences.fontSize=v;await this.plugin.savePreferences();}));
     new Setting(this.containerEl).setName(t('readingAppearance')).addDropdown(c=>c.addOptions({system:t('followObsidian'),light:t('light'),dark:t('dark')}).setValue(this.plugin.preferences.theme).onChange(async v=>{this.plugin.preferences.theme=v as Preferences['theme'];await this.plugin.savePreferences();}));
-    new Setting(this.containerEl).setName(t('supportDevelopment')).setDesc(t('supportDescription')).addButton(b=>b.setButtonText(t('supportOpen')).onClick(()=>{window.open('https://github.com/Clearner1/leafmark-reader/blob/main/SUPPORT.md');}));
+    new Setting(this.containerEl).setName(t('supportDevelopment')).setDesc(t('supportInlineDescription')).setHeading();
+    const codes=this.containerEl.createDiv({cls:'lm-support-codes'});
+    for(const [label,url] of [[t('wechatPay'),wechatQr],[t('alipay'),alipayQr]]){
+      const card=codes.createDiv({cls:'lm-support-card'});card.createEl('h3',{text:label});
+      const button=card.createEl('button',{cls:'lm-support-code',attr:{type:'button','aria-label':t('enlargeQr',{name:label})}});
+      button.createEl('img',{attr:{src:url,alt:label}});
+      button.addEventListener('click',()=>new SupportCodeModal(this.plugin,label,url).open());
+    }
+    this.containerEl.createEl('p',{cls:'setting-item-description',text:t('supportVerify')});
   }
+}
+
+class SupportCodeModal extends Modal {
+  constructor(plugin:LeafmarkPlugin,private label:string,private url:string){super(plugin.app);}
+  onOpen(){this.contentEl.addClass('lm-support-modal');this.contentEl.createEl('h2',{text:this.label});this.contentEl.createEl('img',{attr:{src:this.url,alt:this.label}});}
+  onClose(){this.contentEl.empty();}
 }

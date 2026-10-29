@@ -3,6 +3,7 @@ export type Language = 'zh' | 'en';
 export type TranslationVars = Record<string, string | number>;
 
 const en = {
+  supportInlineDescription:'If Leafmark helps your reading, you can support its development. All features remain free. Tap a code to enlarge it.', wechatPay:'WeChat Pay', alipay:'Alipay', enlargeQr:'Enlarge {name} QR code', supportVerify:'Verify the recipient in your payment app before paying.',
   supportDevelopment:'Project and support', supportDescription:'Report a problem or support continued development.', supportOpen:'Open project',
   legacyChoose:'Choose a Markdown excerpt file', legacyImport:'Import earlier excerpts',
   legacySummary:'Found {count} excerpts. Original notes and Canvas cards are kept. Matching cards will be linked without creating duplicates.',
@@ -52,6 +53,7 @@ const en = {
 } as const;
 export type TranslationKey = keyof typeof en;
 const zh: Record<TranslationKey, string> = {
+  supportInlineDescription:'如果 Leafmark 对你的阅读有帮助，欢迎支持持续开发。所有功能免费使用，点击收款码可放大。', wechatPay:'微信支付', alipay:'支付宝', enlargeQr:'放大{name}收款码', supportVerify:'付款前请在支付应用中核对收款人。',
   supportDevelopment:'项目与支持', supportDescription:'反馈问题，或支持插件持续开发。', supportOpen:'打开项目',
   legacyChoose:'选择已有的 Markdown 摘录文件', legacyImport:'导入已有摘录',
   legacySummary:'找到 {count} 条摘录。原笔记和白板卡片会保留；匹配的卡片将直接关联，不重复创建。',

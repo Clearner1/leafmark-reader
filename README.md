@@ -36,3 +36,13 @@ Independently implemented plugin integration using public EPUB.js, Obsidian APIs
 设置支持“跟随 Obsidian / 中文 / English”。通过命令面板打开 EPUB，连接白板后即可使用。摘录保存在书籍旁的 `.leafmark.json` 文件中；书籍原文不修改。当前为桌面早期版本，移动端和 Windows 尚未完成实机验证，官方插件目录尚未批准上架。
 
 [下载版本](https://github.com/Clearner1/leafmark-reader/releases) · [问题反馈](https://github.com/Clearner1/leafmark-reader/issues) · [项目支持](SUPPORT.md)
+
+## Support development / 支持开发
+
+All features remain free. If Leafmark helps you, voluntary support funds continued maintenance. Payment codes are also available directly in the plugin settings, with click-to-enlarge.
+
+所有功能免费使用。如果 Leafmark 对你的阅读有帮助，欢迎自愿打赏。插件设置内也可直接查看、点击放大收款码。
+
+| WeChat Pay / 微信支付 | Alipay / 支付宝 |
+| --- | --- |
+| <img src="https://raw.githubusercontent.com/Clearner1/leafmark-reader/main/assets/weixinpay.png" width="240" alt="WeChat Pay"> | <img src="https://raw.githubusercontent.com/Clearner1/leafmark-reader/main/assets/alipay.jpg" width="240" alt="Alipay"> |
