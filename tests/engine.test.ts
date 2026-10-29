@@ -154,6 +154,12 @@ it("rejects a missing navigation resource without hanging and permits a healthy 
   const rendition = { on: vi.fn(), off: vi.fn(), themes: { default: vi.fn() }, display: vi.fn().mockResolvedValue(undefined), resize: vi.fn() };
   const render = vi.spyOn(Book.prototype, "renderTo").mockReturnValue(rendition as unknown as Rendition);
   const container = document.createElement("div");
+  container.createDiv = (options) => {
+    const child = document.createElement("div");
+    if (typeof options === "object" && typeof options.cls === "string") child.className = options.cls;
+    container.append(child);
+    return child;
+  };
   const engine = new EpubEngine(container);
   await expect(engine.mount(await zip.generateAsync({ type: "arraybuffer" }))).rejects.toThrow("missing.ncx");
   expect(container.childElementCount).toBe(0);

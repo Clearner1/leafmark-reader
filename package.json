@@ -1,13 +1,14 @@
 {
   "name": "leafmark-reader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Local EPUB reading with source-linked Canvas excerpts.",
   "license": "MIT",
   "scripts": {
     "build": "node build.mjs",
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint src"
   },
   "dependencies": {
     "epubjs": "0.3.93",
@@ -15,7 +16,11 @@
   },
   "devDependencies": {
     "@types/node": "22.19.0",
+    "@typescript-eslint/eslint-plugin": "^8.72.1",
+    "@typescript-eslint/parser": "^8.72.1",
     "esbuild": "0.28.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "happy-dom": "^20.0.0",
     "obsidian": "1.13.1",
     "typescript": "5.9.3",
@@ -24,5 +29,8 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/Clearner1/leafmark-reader.git"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "^0.8.12"
   }
 }

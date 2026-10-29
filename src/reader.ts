@@ -37,7 +37,7 @@ export class ReaderView extends FileView {
   private generation=0;
   private ready:Promise<void>=Promise.resolve();
   private busy=false;
-  private positionTimer?:ReturnType<typeof setTimeout>;
+  private positionTimer?:number;
   private position?:string;
   private positionBookPath?:string;
   private lastAnnotation?:Annotation;
@@ -130,7 +130,7 @@ export class ReaderView extends FileView {
   async onLoadFile(file:TFile){this.ready=this.loadBookFile(file);await this.ready;}
   private async loadBookFile(file:TFile){
     const generation=++this.generation;this.bookLoaded=false;this.busy=false;this.state=undefined;this.dismissTools();this.menu?.hide();this.engine?.destroy();
-    if(this.positionTimer)clearTimeout(this.positionTimer);this.positionTimer=undefined;this.position=undefined;this.positionBookPath=file.path;
+    if(this.positionTimer)window.clearTimeout(this.positionTimer);this.positionTimer=undefined;this.position=undefined;this.positionBookPath=file.path;
     if(!this.mountEl)this.build();this.title.textContent=file.basename;this.title.title=file.basename;
     this.mountEl.empty();this.loadingError=undefined;this.setStatus(()=>t('openingBook'));
     const loading=this.reader.createDiv({cls:'lm-state',text:t('opening')});
@@ -161,27 +161,27 @@ export class ReaderView extends FileView {
     this.engine?.setAppearance({fontSize:p.fontSize,lineHeight:p.lineHeight,theme,fontFamily:'system-ui, "PingFang SC", "Microsoft YaHei", sans-serif'});
   }
   private schedulePositionSave(bookPath:string){
-    if(this.positionTimer)clearTimeout(this.positionTimer);
+    if(this.positionTimer)window.clearTimeout(this.positionTimer);
     const cfi=this.position;const generation=this.generation;if(!cfi)return;
-    this.positionTimer=setTimeout(()=>{
+    this.positionTimer=window.setTimeout(()=>{
       this.positionTimer=undefined;
       void this.plugin.store.savePosition(bookPath,cfi).catch(e=>{if(generation===this.generation&&bookPath===this.file?.path)this.fail(e,()=>this.plugin.store.savePosition(bookPath,cfi));});
     },600);
   }
   async onUnloadFile(file:TFile){
     const cfi=this.positionBookPath===file.path?this.position:undefined;
-    ++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)clearTimeout(this.positionTimer);
+    ++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);
     this.positionTimer=undefined;this.position=undefined;this.positionBookPath=undefined;this.pendingCfi=undefined;
     this.engine?.destroy();this.engine=undefined;this.state=undefined;
     if(cfi)await this.plugin.store.savePosition(file.path,cfi).catch(e=>this.plugin.notify(e));
   }
-  async onClose(){++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)clearTimeout(this.positionTimer);this.positionTimer=undefined;this.engine?.destroy();this.engine=undefined;}
+  async onClose(){++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);this.positionTimer=undefined;this.engine?.destroy();this.engine=undefined;}
   async goTo(cfi:string){
     const origin=this.origin();const ready=this.ready;await ready;if(!origin||!this.isCurrent(origin))return;
     this.dismissTools();if(!this.engine)throw new Error(t('errorBookNotOpen'));await this.engine.goToCFI(cfi);
   }
   private setStatus(text:()=>string){this.statusMessage=text;this.status.textContent=text();this.status.removeClass('is-error');this.retry.hidden=true;this.retryAction=undefined;}
-  private fail(error:unknown|(()=>string),retry?:()=>Promise<void>){this.statusMessage=typeof error==='function'?error as ()=>string:()=>friendlyError(error);this.status.textContent=this.statusMessage();this.status.addClass('is-error');this.retryAction=retry;this.retry.hidden=!retry;}
+  private fail(error:unknown,retry?:()=>Promise<void>){this.statusMessage=typeof error==='function'?error as ()=>string:()=>friendlyError(error);this.status.textContent=this.statusMessage();this.status.addClass('is-error');this.retryAction=retry;this.retry.hidden=!retry;}
   private async refreshState(origin=this.origin()){
     if(!origin)return;
     const state=await this.plugin.store.loadBook(origin.bookPath);if(!this.isCurrent(origin))return state;

@@ -46,3 +46,7 @@ All features remain free. If Leafmark helps you, voluntary support funds continu
 | WeChat Pay / 微信支付 | Alipay / 支付宝 |
 | --- | --- |
 | <img src="https://raw.githubusercontent.com/Clearner1/leafmark-reader/main/assets/weixinpay.png" width="240" alt="WeChat Pay"> | <img src="https://raw.githubusercontent.com/Clearner1/leafmark-reader/main/assets/alipay.jpg" width="240" alt="Alipay"> |
+
+### Build security
+
+The build removes EPUB.js script-loading methods (`Contents.addScript` and `Rendition.injectScript`); scripted EPUB content is not supported. JSZip and localForage are bundled from source instead of their legacy browser distributions. Node stream support uses the desktop host’s built-in module. Legacy scheduling polyfills are replaced with function-only browser scheduling, without dynamic code execution. XML parsing uses a patched `@xmldom/xmldom` release. Run `npm run lint`, `npm run check`, `npm test`, and `npm run build` before publishing.

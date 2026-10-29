@@ -57,6 +57,8 @@ const CONTENT_POLICY = "default-src 'none'; script-src 'none'; connect-src 'none
   "media-src blob: data:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 function isExternalUrl(value: string): boolean {
+  // Strip URL control characters before checking the scheme.
+  // eslint-disable-next-line no-control-regex -- URL scheme checks must strip embedded controls.
   const normalized = value.replace(/[\u0000-\u0020\u007f]/g, "");
   return /^[a-z][a-z\d+.-]*:/i.test(normalized) || normalized.startsWith("//") || normalized.startsWith("\\");
 }
@@ -89,7 +91,7 @@ export function sanitizeBookDocument(document: Document): void {
   let head = document.getElementsByTagName("head")[0];
   const namespace = "http://www.w3.org/1999/xhtml";
   if (!head) {
-    head = document.createElementNS(namespace, "head") as HTMLHeadElement;
+    head = document.createElementNS(namespace, "head");
     document.documentElement.insertBefore(head, document.documentElement.firstChild);
   }
   const policy = document.createElementNS(namespace, "meta");
@@ -176,10 +178,8 @@ export class EpubEngine {
         });
       }
       // A replaced book may finish asynchronously; its detached host cannot overwrite the next book.
-      const host = this.container.ownerDocument.createElement("div");
-      host.style.width = "100%";
-      host.style.height = "100%";
-      this.container.append(host);
+      const host = this.container.createDiv({cls:"lm-book-host"});
+
       const rendition = book.renderTo(host, {
         width: "100%", height: "100%", manager: "default", flow: "scrolled-doc", spread: "none",
         layout: "reflowable", allowScriptedContent: false, resizeOnOrientationChange: false,
@@ -190,9 +190,7 @@ export class EpubEngine {
         this.viewport = host.querySelector<HTMLElement>(".epub-container") ?? undefined;
         if (this.viewport) {
           // Keep the reading width stable when EPUB.js clears a chapter during reflow.
-          this.viewport.style.scrollbarGutter = "stable";
-          this.viewport.style.overflowY = "auto";
-          this.viewport.style.overflowX = "auto";
+          this.viewport.classList.add("lm-book-viewport");
           this.resizeToViewport();
         }
       });
@@ -336,7 +334,7 @@ export class EpubEngine {
     if (!this.rendition) return;
     // Upstream supports omitted dimensions and measures its scroll area's clientWidth/clientHeight.
     // Its .d.ts incorrectly requires numbers; passing the outer pane's width includes the scrollbar.
-    const resize = this.rendition.resize as (width?: number, height?: number) => void;
+    const resize = this.rendition.resize.bind(this.rendition) as (width?: number, height?: number) => void;
     resize.call(this.rendition);
   }
 

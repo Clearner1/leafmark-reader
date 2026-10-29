@@ -31,6 +31,8 @@ export interface BookState {
 }
 
 export function vaultPath(value: string): string {
+  // Reject control characters in vault paths.
+  // eslint-disable-next-line no-control-regex -- Control characters are invalid in vault paths.
   if (typeof value !== "string" || !value || /[\\\u0000-\u001f]/.test(value)
       || value.startsWith("/") || value.split("/").some(part => !part || part === "." || part === "..")) {
     throw new Error("文件路径无效，请选择库内文件。");
@@ -76,7 +78,7 @@ export function parseBookState(text: string, bookPath: string): BookState {
           && isCfi(value.position.cfi) && timestamp(value.position.updatedAt)))) {
       throw new Error("数据结构或版本不受支持");
     }
-    if (value.canvasPath !== null) vaultPath(value.canvasPath as string);
+    if (value.canvasPath !== null) vaultPath(value.canvasPath);
     const ids = new Set<string>();
     for (const annotation of value.annotations) {
       validateAnnotation(annotation, bookPath);

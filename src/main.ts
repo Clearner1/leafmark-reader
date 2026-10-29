@@ -1,6 +1,6 @@
 import wechatQr from '../assets/weixinpay.png';
 import alipayQr from '../assets/alipay.jpg';
-import { Plugin, TFile, FuzzySuggestModal, Notice, PluginSettingTab, Setting, Modal, getLanguage } from 'obsidian';
+import { Plugin, TFile, FuzzySuggestModal, Notice, PluginSettingTab, Setting, Modal, getLanguage, type SettingDefinitionItem } from 'obsidian';
 import { LeafmarkStore } from './store';
 import { CanvasService } from './canvas';
 import { vaultPath, isCfi } from './model';
@@ -15,7 +15,7 @@ class FilePicker extends FuzzySuggestModal<TFile> {
   }
   private stopLanguage?:()=>void;
   private updateLanguage(){this.setPlaceholder(t(this.extension==='epub'?'pickBook':'pickCanvas'));this.emptyStateText=t(this.extension==='epub'?'noBooks':'noCanvases');}
-  onOpen(){super.onOpen();this.stopLanguage=onLanguageChange(()=>this.updateLanguage());}
+  onOpen(){void super.onOpen();this.stopLanguage=onLanguageChange(()=>this.updateLanguage());}
   onClose(){this.stopLanguage?.();super.onClose();}
   getItems() { return this.app.vault.getFiles().filter(f=>f.extension.toLowerCase()===this.extension); }
   getItemText(file:TFile) { return file.path; }
@@ -72,29 +72,32 @@ export default class LeafmarkPlugin extends Plugin {
     configureLanguage(this.preferences.language,getLanguage());
     for(const leaf of this.app.workspace.getLeavesOfType(READER_VIEW)) if(leaf.view instanceof ReaderView)leaf.view.updateAppearance();
   }
-  onunload() { this.app.workspace.detachLeavesOfType(READER_VIEW); }
+
 }
 class ReaderSettings extends PluginSettingTab {
   constructor(private plugin:LeafmarkPlugin){super(plugin.app,plugin);}
-  display(){
-    this.containerEl.empty();
-    new Setting(this.containerEl).setName(t('language')).setDesc(t('languageDescription')).addDropdown(c=>c.addOptions({auto:t('followObsidian'),zh:'中文',en:'English'}).setValue(this.plugin.preferences.language).onChange(async v=>{this.plugin.preferences.language=v as LanguagePreference;await this.plugin.savePreferences();this.display();}));
-    new Setting(this.containerEl).setName(t('fontSize')).addSlider(c=>c.setLimits(14,30,1).setValue(this.plugin.preferences.fontSize).setDynamicTooltip().onChange(async v=>{this.plugin.preferences.fontSize=v;await this.plugin.savePreferences();}));
-    new Setting(this.containerEl).setName(t('readingAppearance')).addDropdown(c=>c.addOptions({system:t('followObsidian'),light:t('light'),dark:t('dark')}).setValue(this.plugin.preferences.theme).onChange(async v=>{this.plugin.preferences.theme=v as Preferences['theme'];await this.plugin.savePreferences();}));
-    new Setting(this.containerEl).setName(t('supportDevelopment')).setDesc(t('supportInlineDescription')).setHeading();
-    const codes=this.containerEl.createDiv({cls:'lm-support-codes'});
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {name:t('language'),desc:t('languageDescription'),render:setting=>{setting.addDropdown(c=>c.addOptions({auto:t('followObsidian'),zh:'中文',en:'English'}).setValue(this.plugin.preferences.language).onChange(async v=>{this.plugin.preferences.language=v as LanguagePreference;await this.plugin.savePreferences();this.update();}));}},
+      {name:t('fontSize'),render:setting=>{setting.addSlider(c=>c.setLimits(14,30,1).setValue(this.plugin.preferences.fontSize).onChange(async v=>{this.plugin.preferences.fontSize=v;await this.plugin.savePreferences();}));}},
+      {name:t('readingAppearance'),render:setting=>{setting.addDropdown(c=>c.addOptions({system:t('followObsidian'),light:t('light'),dark:t('dark')}).setValue(this.plugin.preferences.theme).onChange(async v=>{this.plugin.preferences.theme=v as Preferences['theme'];await this.plugin.savePreferences();}));}},
+      {name:t('supportDevelopment'),desc:t('supportInlineDescription'),render:setting=>{setting.setHeading();setting.settingEl.addClass('lm-support-section');this.renderSupport(setting.settingEl);}},
+    ];
+  }
+  private renderSupport(container:HTMLElement){
+    const codes=container.createDiv({cls:'lm-support-codes'});
     for(const [label,url] of [[t('wechatPay'),wechatQr],[t('alipay'),alipayQr]]){
-      const card=codes.createDiv({cls:'lm-support-card'});card.createEl('h3',{text:label});
+      const card=codes.createDiv({cls:'lm-support-card'});new Setting(card).setName(label).setHeading();
       const button=card.createEl('button',{cls:'lm-support-code',attr:{type:'button','aria-label':t('enlargeQr',{name:label})}});
       button.createEl('img',{attr:{src:url,alt:label}});
       button.addEventListener('click',()=>new SupportCodeModal(this.plugin,label,url).open());
     }
-    this.containerEl.createEl('p',{cls:'setting-item-description',text:t('supportVerify')});
+    container.createEl('p',{cls:'setting-item-description',text:t('supportVerify')});
   }
 }
 
 class SupportCodeModal extends Modal {
   constructor(plugin:LeafmarkPlugin,private label:string,private url:string){super(plugin.app);}
-  onOpen(){this.contentEl.addClass('lm-support-modal');this.contentEl.createEl('h2',{text:this.label});this.contentEl.createEl('img',{attr:{src:this.url,alt:this.label}});}
+  onOpen(){this.contentEl.addClass('lm-support-modal');new Setting(this.contentEl).setName(this.label).setHeading();this.contentEl.createEl('img',{attr:{src:this.url,alt:this.label}});}
   onClose(){this.contentEl.empty();}
 }

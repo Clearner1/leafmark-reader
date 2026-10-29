@@ -1,7 +1,7 @@
 {
   "id": "leafmark-reader",
   "name": "Leafmark Reader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.13.7",
   "description": "Read EPUB books, highlight passages, and collect source-linked excerpts on Canvas.",
   "author": "Zane",

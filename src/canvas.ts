@@ -50,7 +50,7 @@ export function parseCanvas(text: string): CanvasDocument {
           || typeof edge.fromNode !== "string" || typeof edge.toNode !== "string") throw new Error("连线格式无效或标识重复");
       edgeIds.add(edge.id);
     }
-    return { ...value, nodes, edges } as CanvasDocument;
+    return { ...value, nodes: nodes as CanvasNode[], edges: edges as Record<string, unknown>[] };
   } catch (error) {
     throw new Error(`画布数据无法安全读取，原文件已保留。${error instanceof Error ? error.message : ""}`);
   }
@@ -63,7 +63,7 @@ export function sourceLink(annotation: Annotation, vaultName: string): string {
   return `obsidian://leafmark?${query.toString()}`;
 }
 
-function markdownText(text: string): string { return text.replace(/[\\`*_{}\[\]<>#!|]/g, "\\$&"); }
+function markdownText(text: string): string { return text.replace(/[\\`*_{}[\]<>#!|]/g, "\\$&"); }
 
 // This checksum detects edits, not authenticity. A changed generated block becomes user-owned.
 function checksum(text: string): string {

@@ -6,7 +6,7 @@ This independently implemented plugin uses the following general-purpose package
 
 License: MIT
 
-## @xmldom/xmldom 0.7.13
+## @xmldom/xmldom 0.8.15
 
 License: MIT
 
@@ -1546,3 +1546,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 
+
+## Build modifications
+
+EPUB.js Contents.addScript and Rendition.injectScript are disabled by build-security.mjs. The immediate and setimmediate polyfills are replaced by local function-only browser schedulers. Original upstream license notices are retained above.
