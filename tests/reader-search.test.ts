@@ -2,6 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ReaderView } from '../src/reader';
 import { configureLanguage, t } from '../src/i18n';
+import type { ReaderSearchResult } from '../src/engine';
 
 vi.mock('../src/migration-ui', () => ({ chooseLegacyExcerpts: vi.fn() }));
 
@@ -47,7 +48,7 @@ function reader() {
   view.build();
   document.body.append(view.contentEl);
   const engine = {
-    search: vi.fn().mockResolvedValue([]), goToCFI: vi.fn().mockResolvedValue(undefined),
+    search: vi.fn().mockResolvedValue({ hits: [], failedSections: 0 }), goToCFI: vi.fn().mockResolvedValue(undefined),
     setSearchHighlight: vi.fn(), resize: vi.fn(), destroy: vi.fn(), getToc: () => [],
   };
   Object.assign(view, { engine, bookLoaded: true });
@@ -91,7 +92,7 @@ describe('book search controls', () => {
 
   it('searches on Enter, cycles through hits, and clears on Escape', async () => {
     const { view, engine, content } = reader();
-    engine.search.mockResolvedValue(hits);
+    engine.search.mockResolvedValue({ hits, failedSections: 0 });
     view.openSearch();
     let input = content.querySelector<HTMLInputElement>('.lm-search-input')!;
     input.value = 'needle';
@@ -133,23 +134,107 @@ describe('book search controls', () => {
     expect(content.querySelector<HTMLButtonElement>('[data-i18n="previousMatch"]')?.disabled).toBe(true);
     expect(content.querySelector<HTMLButtonElement>('[data-i18n="nextMatch"]')?.disabled).toBe(true);
   });
+
+  it.each([0, 1])('keeps search results after initial navigation fails with %s unreadable sections', async failedSections => {
+    const { view, engine, content } = reader();
+    engine.search.mockResolvedValue({ hits, failedSections });
+    engine.goToCFI.mockRejectedValueOnce(new Error('书中找不到这个章节。'));
+    view.openSearch();
+    await view.runBookSearch('needle');
+    const countKey = failedSections ? 'searchCountIncomplete' : 'searchCount';
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t(countKey, { current: 1, total: 2 }));
+    expect(content.querySelector('.lm-status')?.textContent).toBe(t('errorChapter'));
+    expect(view.searchError).toBeUndefined();
+    await view.jumpToSearchHit(1);
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t(countKey, { current: 2, total: 2 }));
+    expect(engine.setSearchHighlight).toHaveBeenLastCalledWith(hits[1].cfi);
+    expect(view.searchError).toBeUndefined();
+    content.querySelector<HTMLButtonElement>('.lm-retry')!.click();
+    await vi.waitFor(() => expect(engine.goToCFI).toHaveBeenCalledTimes(3));
+    expect(engine.goToCFI).toHaveBeenLastCalledWith(hits[0].cfi);
+    expect(engine.search).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['en', 'zh'] as const)('warns about incomplete results and keeps the warning while navigating in %s', async language => {
+    configureLanguage(language);
+    const { view, engine, content } = reader();
+    engine.search.mockResolvedValue({ hits, failedSections: 2 });
+    view.openSearch();
+    await view.runBookSearch('needle');
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('searchCountIncomplete', { current: 1, total: 2 }));
+    expect(content.querySelector('.lm-search-warning')?.textContent).toBe(t('searchIncomplete', { count: 2 }));
+    await view.jumpToSearchHit(1);
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('searchCountIncomplete', { current: 2, total: 2 }));
+    view.clearBookSearch();
+    expect(view.searchFailedSections).toBe(0);
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('searchHint'));
+    expect(content.querySelector('.lm-search-warning')).toBeNull();
+  });
+
+  it.each(['en', 'zh'] as const)('reports an incomplete search instead of no matches in %s', async language => {
+    configureLanguage(language);
+    const { view, engine, content } = reader();
+    engine.search.mockResolvedValueOnce({ hits: [], failedSections: 1 });
+    view.openSearch();
+    await view.runBookSearch('needle');
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('searchIncomplete', { count: 1 }));
+    expect(content.querySelector<HTMLButtonElement>('[data-i18n="nextMatch"]')?.disabled).toBe(true);
+    await view.runBookSearch('absent');
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('noSearchMatches'));
+    expect(view.searchFailedSections).toBe(0);
+  });
+
+  it.each(['en', 'zh'] as const)('shows a complete search failure in the panel and footer and permits retry in %s', async language => {
+    configureLanguage(language);
+    const { view, engine, content } = reader();
+    engine.search.mockRejectedValueOnce(new Error('无法读取任何章节，全文搜索失败。'));
+    view.openSearch();
+    const input = content.querySelector<HTMLInputElement>('.lm-search-input')!;
+    input.value = 'needle';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('errorSearchFailed')));
+    expect(content.querySelector('.lm-status')?.textContent).toBe(t('errorSearchFailed'));
+    expect(content.querySelector('.lm-status')?.classList.contains('is-error')).toBe(true);
+    expect(content.querySelector<HTMLButtonElement>('.lm-retry')?.hidden).toBe(false);
+    content.querySelector<HTMLButtonElement>('.lm-retry')!.click();
+    await vi.waitFor(() => expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('noSearchMatches')));
+    expect(engine.search).toHaveBeenCalledTimes(2);
+    expect(content.querySelector('.lm-status')?.classList.contains('is-error')).toBe(false);
+    expect(content.querySelector<HTMLButtonElement>('.lm-retry')?.hidden).toBe(true);
+  });
+
+  it('clears and relocalizes search failures with the rest of the interface', async () => {
+    const { view, engine, content } = reader();
+    engine.search.mockRejectedValueOnce(new Error('无法读取任何章节，全文搜索失败。'));
+    view.openSearch();
+    await view.runBookSearch('needle');
+    configureLanguage('zh');view.updateLanguage();
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('errorSearchFailed'));
+    expect(content.querySelector('.lm-status')?.textContent).toBe(t('errorSearchFailed'));
+    view.clearBookSearch();
+    expect(content.querySelector('.lm-search-status')?.textContent).toBe(t('searchHint'));
+    expect(content.querySelector('.lm-status')?.classList.contains('is-error')).toBe(false);
+    expect(content.querySelector<HTMLButtonElement>('.lm-retry')?.hidden).toBe(true);
+    expect(view.searchError).toBeUndefined();
+  });
 });
 
 describe('book search cancellation', () => {
   it('discards a cleared search and waits for its section loads before starting the next', async () => {
     const { view, engine } = reader();
-    const old = deferred<typeof hits>();
-    engine.search.mockReturnValueOnce(old.promise).mockResolvedValueOnce([hits[1]]);
+    const old = deferred<ReaderSearchResult>();
+    engine.search.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ hits: [hits[1]], failedSections: 0 });
     const first = view.runBookSearch('first');
     await vi.waitFor(() => expect(engine.search).toHaveBeenCalledTimes(1));
     view.clearBookSearch();
     const second = view.runBookSearch('second');
     await Promise.resolve();
     expect(engine.search).toHaveBeenCalledTimes(1);
-    old.resolve([hits[0]]);
+    old.resolve({ hits: [hits[0]], failedSections: 2 });
     await Promise.all([first, second]);
     expect(engine.search.mock.calls).toEqual([['first'], ['second']]);
     expect(view.searchHits).toEqual([hits[1]]);
+    expect(view.searchFailedSections).toBe(0);
     expect(engine.goToCFI).toHaveBeenCalledTimes(1);
     expect(engine.goToCFI).toHaveBeenCalledWith(hits[1].cfi);
   });
@@ -158,6 +243,7 @@ describe('book search cancellation', () => {
     const { view, engine } = reader();
     const navigation = deferred<void>();
     view.searchHits = hits;
+    view.searchFailedSections = 2;
     engine.goToCFI.mockReturnValueOnce(navigation.promise);
     const jump = view.jumpToSearchHit(0);
     view.clearBookSearch();
@@ -166,15 +252,18 @@ describe('book search cancellation', () => {
     await jump;
     expect(engine.setSearchHighlight).not.toHaveBeenCalledWith(hits[0].cfi);
     expect(view.searchHits).toEqual([]);
+    expect(view.searchFailedSections).toBe(0);
   });
 
   it('clears results and temporary highlights when the book is unloaded', async () => {
     const { view, engine } = reader();
     view.searchQuery = view.searchTerm = 'needle';
     view.searchHits = hits;
+    view.searchFailedSections = 2;
     await view.onUnloadFile(view.file);
     expect(view.searchQuery).toBe('');
     expect(view.searchHits).toEqual([]);
+    expect(view.searchFailedSections).toBe(0);
     expect(engine.setSearchHighlight).toHaveBeenCalledWith();
     expect(engine.destroy).toHaveBeenCalled();
   });

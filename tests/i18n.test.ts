@@ -40,6 +40,15 @@ describe('interface localization', () => {
     finally { messages.zh.retry = original; }
   });
 
+  it('localizes incomplete search counts and failure details', () => {
+    configureLanguage('en');
+    expect(t('searchCountIncomplete', { current: 1, total: 3 })).toBe('1 / 3 (incomplete search)');
+    expect(t('searchIncomplete', { count: 2 })).toBe('Search results are incomplete. Sections that could not be read: 2.');
+    configureLanguage('zh');
+    expect(t('searchCountIncomplete', { current: 2, total: 3 })).toBe('2 / 3（部分章节未能搜索）');
+    expect(t('searchIncomplete', { count: 1 })).toBe('有 1 个章节未能读取，搜索结果不完整。');
+  });
+
   it('notifies live views once per effective language change and permits cleanup', () => {
     configureLanguage('en');
     const update = vi.fn();
@@ -60,6 +69,7 @@ describe('interface localization', () => {
     ['找不到画布：私人/笔记.canvas。请重新选择文件。', 'errorMissingCanvas'],
     ['数据路径被文件夹占用：私人/笔记', 'errorDataFolder'],
     ['电子书不能请求外部资源。', 'errorExternalResource'],
+    ['无法读取任何章节，全文搜索失败。', 'errorSearchFailed'],
     ['这本书采用固定版式；当前阅读器支持可重排的 EPUB，请使用可重排版本。', 'errorFixedLayout'],
     ['画布数据无法安全读取，原文件已保留。节点格式无效或标识重复', 'errorCanvasData'],
     ['此画布在多个窗格中打开。请保留一个画布窗格后重试，以免覆盖其他窗格的编辑。', 'errorMultiplePanes'],
