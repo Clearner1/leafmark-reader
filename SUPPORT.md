@@ -1,9 +1,13 @@
 # Support Leafmark Reader / 支持开发
 
-Leafmark Reader is free to use. Feedback, reproducible bug reports, and sharing your reading workflow help improve it.
+Leafmark Reader is free to use. If it helps your reading, you can voluntarily support continued development using WeChat Pay or Alipay. No payment unlocks or changes features.
 
-Leafmark Reader 免费使用。欢迎通过 Issues 反馈问题和阅读体验。
+Leafmark Reader 免费使用。如果它对你的阅读有帮助，可以通过微信或支付宝自愿打赏，支持持续维护。打赏不会影响功能使用。
 
-Voluntary WeChat Pay and Alipay support details will be added here when the maintainer supplies verified payment images. No payment is required to use the reader.
+| WeChat Pay / 微信支付 | Alipay / 支付宝 |
+| --- | --- |
+| <img src="assets/weixinpay.png" width="260" alt="WeChat Pay support QR code"> | <img src="assets/alipay.jpg" width="260" alt="Alipay support QR code"> |
 
-微信支付和支付宝的自愿打赏信息将在作者提供并核对收款图片后加入。使用插件不需要付款。
+Please verify the recipient shown in your payment app before paying. / 付款前请在支付应用中核对收款人。
+
+[Report an issue / 反馈问题](https://github.com/Clearner1/leafmark-reader/issues)
