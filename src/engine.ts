@@ -19,6 +19,14 @@ export interface ReaderHighlight {
   thought?: string;
 }
 
+export interface ReaderSearchHit {
+  cfi: string;
+  excerpt: string;
+  chapter: string;
+  sectionHref: string;
+  sectionIndex: number;
+}
+
 export interface ReaderAppearance {
   fontSize: number;
   fontFamily: string;
@@ -127,6 +135,8 @@ export class EpubEngine {
   private rendition?: Rendition;
   private chapters: ChapterEntry[] = [];
   private highlights = new Map<string, ReaderHighlight>();
+  private searchCfi?: string;
+  private searchOverlay?: HTMLElement;
   private observer?: ResizeObserver;
   private viewport?: HTMLElement;
   private resizeFrame = 0;
@@ -201,7 +211,10 @@ export class EpubEngine {
         if (this.disposed || generation !== this.generation || !location?.start?.cfi) return;
         this.location = { cfi: location.start.cfi, chapter: this.chapterLabel(location.start.href) };
         this.callbacks.onLocation?.(this.location);
+        this.renderSearchHighlight();
       });
+      rendition.on("rendered", this.renderSearchHighlight);
+      rendition.on("resized", this.renderSearchHighlight);
       rendition.on("displayError", (error: unknown) => {
         if (!this.disposed && generation === this.generation) this.callbacks.onError?.(errorOf(error));
       });
@@ -226,6 +239,34 @@ export class EpubEngine {
 
   getToc(): ChapterEntry[] {
     return this.chapters;
+  }
+
+  async search(query: string): Promise<ReaderSearchHit[]> {
+    query = query.trim();
+    const book = this.book;
+    if (!query || !book || this.disposed) return [];
+    const generation = this.generation;
+    const active = () => !this.disposed && generation === this.generation;
+    const sections: Section[] = [];
+    book.spine.each((section: Section) => sections.push(section));
+    const hits: ReaderSearchHit[] = [];
+    for (const section of sections) {
+      if (!active()) return [];
+      try {
+        // Upstream declares a synchronous document; load actually resolves the root element.
+        const load = section.load.bind(section) as unknown as (request?: Book["load"]) => Promise<Element>;
+        await load(book.load.bind(book));
+        if (!active()) return [];
+        // The upstream declaration says Element[]; the public API returns { cfi, excerpt }[].
+        const matches = section.find(query) as unknown as Pick<ReaderSearchHit, "cfi" | "excerpt">[];
+        for (const match of matches) hits.push({ ...match, chapter: this.chapterLabel(section.href), sectionHref: section.href, sectionIndex: section.index });
+      } catch {
+        // One unreadable chapter must not prevent searching the rest of the book.
+      } finally {
+        try { section.unload?.(); } catch { /* Continue even if this chapter cannot be released. */ }
+      }
+    }
+    return active() ? hits : [];
   }
 
   async goToCFI(cfi: string): Promise<void> {
@@ -278,6 +319,35 @@ export class EpubEngine {
     }
   }
 
+  setSearchHighlight(cfi?: string): void {
+    this.searchCfi = undefined;
+    this.searchOverlay?.remove();
+    this.searchOverlay = undefined;
+    this.container.removeEventListener("scroll", this.renderSearchHighlight, true);
+    this.container.ownerDocument.defaultView?.removeEventListener("resize", this.renderSearchHighlight);
+    if (!cfi || this.disposed || !this.rendition || !this.validCfi(cfi)) return;
+    this.searchCfi = cfi;
+    this.searchOverlay = this.container.createDiv({ cls: "lm-search-highlight", attr: { "aria-hidden": "true" } });
+    this.container.addEventListener("scroll", this.renderSearchHighlight, true);
+    this.container.ownerDocument.defaultView?.addEventListener("resize", this.renderSearchHighlight);
+    this.renderSearchHighlight();
+  }
+
+  private readonly renderSearchHighlight = (): void => {
+    const overlay = this.searchOverlay;
+    if (!overlay || !this.searchCfi || !this.rendition || this.disposed) return;
+    overlay.replaceChildren();
+    try {
+      const range = this.rendition.getRange(this.searchCfi);
+      if (!range) return;
+      const bounds = this.container.getBoundingClientRect();
+      for (const rect of this.rangeRects(range)) {
+        const mark = overlay.createDiv({ cls: "lm-search-highlight-fragment" });
+        Object.assign(mark.style, { left: `${rect.left - bounds.left}px`, top: `${rect.top - bounds.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+      }
+    } catch { /* The active match may belong to a chapter that is not currently rendered. */ }
+  };
+
   /** Returns null for an unrendered chapter; measuring a highlight must never navigate. */
   async getRangeRect(cfi: string): Promise<DOMRect | null> {
     if (!this.rendition || !this.validCfi(cfi)) return null;
@@ -307,6 +377,7 @@ export class EpubEngine {
   }
 
   destroy(): void {
+    this.setSearchHighlight();
     this.disposed = true;
     this.generation++;
     this.observer?.disconnect();
@@ -383,9 +454,9 @@ export class EpubEngine {
     } catch (error) { this.callbacks.onError?.(errorOf(error)); }
   }
 
-  private rangeRect(range: Range): DOMRect | null {
+  private rangeRects(range: Range): DOMRect[] {
     let window = range.startContainer.ownerDocument?.defaultView;
-    if (!window) return null;
+    if (!window) return [];
     let offsetX = 0;
     let offsetY = 0;
     let scaleX = 1;
@@ -402,15 +473,23 @@ export class EpubEngine {
       window = frame.ownerDocument.defaultView!;
     }
     const viewport = this.container.getBoundingClientRect();
-    const rectangles = Array.from(range.getClientRects()).map(rect => ({
+    return Array.from(range.getClientRects()).map(rect => ({
       left: offsetX + rect.left * scaleX, right: offsetX + rect.right * scaleX,
       top: offsetY + rect.top * scaleY, bottom: offsetY + rect.bottom * scaleY,
-    })).filter(rect => rect.right > rect.left && rect.bottom > rect.top && rect.bottom > viewport.top && rect.top < viewport.bottom && rect.right > viewport.left && rect.left < viewport.right);
+    })).filter(rect => rect.right > rect.left && rect.bottom > rect.top && rect.bottom > viewport.top && rect.top < viewport.bottom && rect.right > viewport.left && rect.left < viewport.right).map(rect => {
+      const left = Math.max(viewport.left, rect.left);
+      const top = Math.max(viewport.top, rect.top);
+      return new DOMRect(left, top, Math.min(viewport.right, rect.right) - left, Math.min(viewport.bottom, rect.bottom) - top);
+    });
+  }
+
+  private rangeRect(range: Range): DOMRect | null {
+    const rectangles = this.rangeRects(range);
     if (!rectangles.length) return null;
-    const left = Math.max(viewport.left, Math.min(...rectangles.map(rect => rect.left)));
-    const top = Math.max(viewport.top, Math.min(...rectangles.map(rect => rect.top)));
-    const right = Math.min(viewport.right, Math.max(...rectangles.map(rect => rect.right)));
-    const bottom = Math.min(viewport.bottom, Math.max(...rectangles.map(rect => rect.bottom)));
+    const left = Math.min(...rectangles.map(rect => rect.left));
+    const top = Math.min(...rectangles.map(rect => rect.top));
+    const right = Math.max(...rectangles.map(rect => rect.right));
+    const bottom = Math.max(...rectangles.map(rect => rect.bottom));
     return new DOMRect(left, top, right - left, bottom - top);
   }
 

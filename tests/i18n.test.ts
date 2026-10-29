@@ -25,9 +25,11 @@ describe('interface localization', () => {
   it('interpolates values without translating or reprocessing user content', () => {
     configureLanguage('en');
     expect(t('syncedExcerpts', { count: 4 })).toBe('Synced 4 excerpts');
+    expect(t('searchCount', { current: 2, total: 9 })).toBe('2 / 9');
     expect(t('cannotOpenBook', { error: '原文 {count} $& <tag>' })).toBe('Unable to open this book\n原文 {count} $& <tag>');
     configureLanguage('zh');
     expect(t('syncedExcerpts', { count: 0 })).toBe('已同步 0 条摘录');
+    expect(t('searchCount', { current: 1, total: 3 })).toBe('1 / 3');
     expect(t('syncedExcerpts')).toBe('已同步 {count} 条摘录');
   });
 

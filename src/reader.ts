@@ -2,12 +2,12 @@ import { compactRange } from './migrate';
 import { chooseLegacyExcerpts } from './migration-ui';
 import { FileView, TFile, WorkspaceLeaf, Menu, Modal, setIcon } from 'obsidian';
 import type LeafmarkPlugin from './main';
-import { EpubEngine, type ReaderSelection, type ChapterEntry } from './engine';
+import { EpubEngine, type ReaderSelection, type ReaderSearchHit, type ChapterEntry } from './engine';
 import type { Annotation, BookState } from './model';
 import { friendlyError, onLanguageChange, t, type TranslationKey } from './i18n';
 
 export const READER_VIEW='leafmark-reading';
-type Panel='chapters'|'excerpts'|'settings';
+type Panel='chapters'|'search'|'excerpts'|'settings';
 type Filter='all'|'highlights'|'thoughts';
 type BookOrigin={bookPath:string;generation:number;canvasPath:string|null};
 
@@ -31,6 +31,14 @@ export class ReaderView extends FileView {
   private panelMode:Panel='chapters';
   private filter:Filter='all';
   private query='';
+  private searchQuery='';
+  private searchTerm='';
+  private searchHits:ReaderSearchHit[]=[];
+  private searchHitIndex=-1;
+  private searchRunning=false;
+  private searchGeneration=0;
+  private searchNavigation=0;
+  private searchTask:Promise<ReaderSearchHit[]>=Promise.resolve([]);
   private floating?:HTMLElement;
   private pendingSelection?:ReaderSelection;
   private retryAction?:()=>Promise<void>;
@@ -106,6 +114,7 @@ export class ReaderView extends FileView {
     this.contentEl.empty();
     const bar=this.contentEl.createDiv({cls:'lm-toolbar'});
     this.uiButton(bar,'chaptersAndExcerpts',()=>{this.panel.hidden=!this.panel.hidden;this.renderPanel();this.engine?.resize();},'panel-left');
+    this.uiButton(bar,'search',()=>this.openSearch(),'search');
     const heading=bar.createDiv({cls:'lm-title-block'});
     this.title=heading.createDiv({cls:'lm-book-title',text:this.file?.basename??t('openABook')});
     this.chapter=heading.createDiv({cls:'lm-chapter-title'});
@@ -117,8 +126,8 @@ export class ReaderView extends FileView {
     const body=this.contentEl.createDiv({cls:'lm-body'});
     this.panel=body.createEl('aside',{cls:'lm-panel'});this.panel.hidden=true;
     const tabs=this.panel.createDiv({cls:'lm-panel-tabs',attr:{role:'tablist','aria-label':t('readingNavigation')}});
-    for(const [mode,label] of [['chapters','chapters'],['excerpts','excerpts'],['settings','typography']] as const){
-      const b=this.uiButton(tabs,label,()=>{this.panelMode=mode;this.renderPanel();});b.addClass('lm-tab');b.dataset.mode=mode;b.setAttribute('role','tab');
+    for(const [mode,label] of [['chapters','chapters'],['search','search'],['excerpts','excerpts'],['settings','typography']] as const){
+      const b=this.uiButton(tabs,label,()=>{this.panelMode=mode;this.renderPanel();if(mode==='search')this.focusSearch();});b.addClass('lm-tab');b.dataset.mode=mode;b.setAttribute('role','tab');
     }
     this.panelContent=this.panel.createDiv({cls:'lm-panel-content'});
     this.reader=body.createDiv({cls:'lm-reader'});
@@ -129,10 +138,10 @@ export class ReaderView extends FileView {
   }
   async onLoadFile(file:TFile){this.ready=this.loadBookFile(file);await this.ready;}
   private async loadBookFile(file:TFile){
-    const generation=++this.generation;this.bookLoaded=false;this.busy=false;this.state=undefined;this.dismissTools();this.menu?.hide();this.engine?.destroy();
+    const generation=++this.generation;this.bookLoaded=false;this.busy=false;this.state=undefined;this.resetBookSearch();this.dismissTools();this.menu?.hide();this.engine?.destroy();
     if(this.positionTimer)window.clearTimeout(this.positionTimer);this.positionTimer=undefined;this.position=undefined;this.positionBookPath=file.path;
     if(!this.mountEl)this.build();this.title.textContent=file.basename;this.title.title=file.basename;
-    this.mountEl.empty();this.loadingError=undefined;this.setStatus(()=>t('openingBook'));
+    this.mountEl.empty();this.loadingError=undefined;this.setStatus(()=>t('openingBook'));this.renderPanel();
     const loading=this.reader.createDiv({cls:'lm-state',text:t('opening')});
     const engine=new EpubEngine(this.mountEl,{
       onSelection:s=>{if(generation===this.generation)this.showSelection(s);},
@@ -170,12 +179,12 @@ export class ReaderView extends FileView {
   }
   async onUnloadFile(file:TFile){
     const cfi=this.positionBookPath===file.path?this.position:undefined;
-    ++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);
+    ++this.generation;this.bookLoaded=false;this.busy=false;this.resetBookSearch();this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);
     this.positionTimer=undefined;this.position=undefined;this.positionBookPath=undefined;this.pendingCfi=undefined;
-    this.engine?.destroy();this.engine=undefined;this.state=undefined;
+    this.engine?.destroy();this.engine=undefined;this.state=undefined;this.renderPanel();
     if(cfi)await this.plugin.store.savePosition(file.path,cfi).catch(e=>this.plugin.notify(e));
   }
-  async onClose(){++this.generation;this.bookLoaded=false;this.busy=false;this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);this.positionTimer=undefined;this.engine?.destroy();this.engine=undefined;}
+  async onClose(){++this.generation;this.bookLoaded=false;this.busy=false;this.resetBookSearch();this.dismissTools();this.menu?.hide();if(this.positionTimer)window.clearTimeout(this.positionTimer);this.positionTimer=undefined;this.engine?.destroy();this.engine=undefined;}
   async goTo(cfi:string){
     const origin=this.origin();const ready=this.ready;await ready;if(!origin||!this.isCurrent(origin))return;
     this.dismissTools();if(!this.engine)throw new Error(t('errorBookNotOpen'));await this.engine.goToCFI(cfi);
@@ -294,10 +303,95 @@ export class ReaderView extends FileView {
       if(this.isCurrent(origin))this.setStatus(()=>t('highlightRemoved'));
     });},'trash-2');place();
   }
+  private focusSearch(){this.panelContent.querySelector<HTMLInputElement>('.lm-search-input')?.focus();}
+  private openSearch(){
+    this.dismissTools();this.panel.hidden=false;this.panelMode='search';this.renderPanel();this.engine?.resize();this.focusSearch();
+  }
+  private resetBookSearch(){
+    ++this.searchGeneration;++this.searchNavigation;
+    this.searchQuery='';this.searchTerm='';this.searchHits=[];this.searchHitIndex=-1;this.searchRunning=false;
+    this.engine?.setSearchHighlight();
+  }
+  private clearBookSearch(){this.resetBookSearch();if(this.panelMode==='search')this.renderPanel();this.focusSearch();}
+  private async runBookSearch(query:string){
+    const term=query.trim();if(!term){this.clearBookSearch();return;}
+    const engine=this.engine;if(!engine||!this.bookLoaded||this.searchRunning)return;
+    const generation=++this.searchGeneration;
+    const current=()=>generation===this.searchGeneration&&engine===this.engine&&this.bookLoaded;
+    this.searchQuery=term;this.searchTerm=term;this.searchHits=[];this.searchHitIndex=-1;this.searchRunning=true;
+    engine.setSearchHighlight();if(this.panelMode==='search')this.renderPanel();
+    // A cleared search may still be loading a section; let it unload before another search uses it.
+    const task=this.searchTask.catch(()=>[]).then(()=>current()?engine.search(term):[]);this.searchTask=task;
+    try{
+      const hits=await task;if(!current())return;
+      this.searchHits=hits;if(hits.length)await this.jumpToSearchHit(0);
+    }catch(e){if(current())throw e;}
+    finally{if(current()){this.searchRunning=false;if(this.panelMode==='search')this.renderPanel();}}
+  }
+  private async jumpToSearchHit(index:number){
+    const engine=this.engine;const hit=this.searchHits[index];if(!engine||!hit)return;
+    const generation=this.searchGeneration;const navigation=++this.searchNavigation;
+    const current=()=>generation===this.searchGeneration&&navigation===this.searchNavigation&&engine===this.engine&&this.bookLoaded;
+    this.searchHitIndex=index;engine.setSearchHighlight();this.dismissTools();this.updateSearchSelection();
+    try{await engine.goToCFI(hit.cfi);if(current())engine.setSearchHighlight(hit.cfi);}
+    catch(e){if(current())throw e;}
+  }
+  private navigateSearchHit(delta:number){
+    if(this.searchRunning||!this.searchHits.length)return;
+    const index=(this.searchHitIndex+delta+this.searchHits.length)%this.searchHits.length;
+    this.run(()=>this.jumpToSearchHit(index));
+  }
+  private updateSearchSelection(){
+    if(this.panelMode!=='search')return;
+    this.panelContent.querySelectorAll<HTMLElement>('.lm-search-result').forEach((row,index)=>{const active=index===this.searchHitIndex;row.toggleClass('is-active',active);row.setAttribute('aria-current',String(active));});
+    const status=this.panelContent.querySelector('.lm-search-status');
+    if(status&&!this.searchRunning&&this.searchHits.length)status.textContent=t('searchCount',{current:this.searchHitIndex+1,total:this.searchHits.length});
+  }
+  private appendSearchExcerpt(parent:HTMLElement,excerpt:string,query:string){
+    const term=query.trim();let start=0;
+    if(term){
+      const pattern=new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi');
+      for(const match of excerpt.matchAll(pattern)){
+        const index=match.index;parent.append(parent.ownerDocument.createTextNode(excerpt.slice(start,index)));
+        parent.createEl('mark',{cls:'lm-search-mark',text:match[0]});start=index+match[0].length;
+      }
+    }
+    parent.append(parent.ownerDocument.createTextNode(excerpt.slice(start)));
+  }
+  private renderSearchPanel(){
+    const panel=this.panelContent.createDiv({cls:'lm-search-panel',attr:{'aria-busy':String(this.searchRunning)}});
+    const bar=panel.createDiv({cls:'lm-search-bar'});
+    const input=bar.createEl('input',{type:'search',cls:'lm-search-input',attr:{placeholder:t('searchPlaceholder'),'aria-label':t('search')}});
+    input.value=this.searchQuery;input.disabled=!this.bookLoaded;
+    const clear=this.uiButton(bar,'clearSearch',()=>this.clearBookSearch(),'x');
+    const submit=this.uiButton(bar,'searchBook',()=>this.run(()=>this.runBookSearch(input.value)));
+    const updateButtons=()=>{clear.disabled=!this.searchQuery&&!this.searchTerm&&!this.searchRunning;submit.disabled=!this.bookLoaded||this.searchRunning||!input.value.trim();};updateButtons();
+    input.addEventListener('input',()=>{this.searchQuery=input.value;if(!input.value){this.clearBookSearch();return;}updateButtons();});
+    input.addEventListener('keydown',e=>{
+      if(e.key==='Enter'&&!e.isComposing){e.preventDefault();this.run(()=>this.runBookSearch(input.value));}
+      if(e.key==='Escape'){e.preventDefault();e.stopPropagation();this.clearBookSearch();}
+    });
+    const navigation=panel.createDiv({cls:'lm-search-navigation'});
+    const nav=navigation.createDiv({cls:'lm-nav-group'});
+    for(const [key,delta,icon] of [['previousMatch',-1,'chevron-up'],['nextMatch',1,'chevron-down']] as const){
+      const button=this.uiButton(nav,key,()=>this.navigateSearchHit(delta),icon);button.disabled=this.searchRunning||!this.searchHits.length;
+    }
+    const status=this.searchRunning?t('searching'):this.searchHits.length?t('searchCount',{current:this.searchHitIndex+1,total:this.searchHits.length}):t(this.searchTerm?'noSearchMatches':'searchHint');
+    navigation.createDiv({cls:'lm-search-status',text:status,attr:{role:'status','aria-live':'polite'}});
+    const list=panel.createDiv({cls:'lm-search-results',attr:{role:'region','aria-label':t('searchResults')}});
+    this.searchHits.forEach((hit,index)=>{
+      const row=this.button(list,hit.chapter,()=>this.run(()=>this.jumpToSearchHit(index)));row.addClass('lm-search-result');row.empty();row.removeAttribute('aria-label');
+      row.toggleClass('is-active',index===this.searchHitIndex);row.setAttribute('aria-current',String(index===this.searchHitIndex));row.disabled=this.searchRunning;
+      row.createSpan({cls:'lm-search-chapter',text:hit.chapter});
+      const excerpt=row.createSpan({cls:'lm-search-excerpt'});this.appendSearchExcerpt(excerpt,hit.excerpt,this.searchTerm);
+    });
+  }
   private renderPanel(){
     if(!this.panelContent)return;
+    const searchFocused=this.panelContent.querySelector('.lm-search-input')===this.panelContent.ownerDocument.activeElement;
     this.panel.querySelectorAll<HTMLButtonElement>('.lm-tab').forEach(t=>{const active=t.dataset.mode===this.panelMode;t.toggleClass('is-active',active);t.setAttribute('aria-selected',String(active));});
     this.panelContent.empty();
+    if(this.panelMode==='search'){this.renderSearchPanel();if(searchFocused)this.focusSearch();return;}
     if(this.panelMode==='chapters'){
       const render=(entries:ChapterEntry[],depth=0)=>{for(const entry of entries){const b=this.button(this.panelContent,entry.label,()=>this.run(async()=>{await this.engine?.goToChapter(entry.href);this.dismissTools();}));b.addClass('lm-chapter-row');b.style.setProperty('--lm-depth',String(depth));render(entry.subitems,depth+1);}};
       const chapters=this.engine?.getToc()??[];render(chapters);if(!chapters.length)this.panelContent.createDiv({cls:'lm-empty',text:t('noChapters')});return;
