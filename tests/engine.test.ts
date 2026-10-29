@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
-import { Window } from "happy-dom";
-import { Book, type Rendition } from "epubjs";
+import { Document as HappyDocument, PropertySymbol, Window } from "happy-dom";
+import { Book, EpubCFI, type Rendition } from "epubjs";
 import { EpubEngine, highlightColor, sanitizeBookDocument } from "../src/engine";
 
 const cfi = "epubcfi(/6/2[chapter]!/4/2/1:0)";
@@ -20,6 +20,22 @@ beforeAll(() => {
 afterAll(() => {
   if (createDivDescriptor) Object.defineProperty(HTMLElement.prototype, "createDiv", createDivDescriptor);
   else Reflect.deleteProperty(HTMLElement.prototype, "createDiv");
+});
+const createRange = HappyDocument.prototype.createRange;
+beforeEach(() => {
+  // happy-dom binds XML ranges to the window document; keep detached EPUB ranges in their owning document.
+  vi.spyOn(HappyDocument.prototype, "createRange").mockImplementation(function (this: Document) {
+    const range = createRange.call(this);
+    const internals = range as unknown as {
+      [PropertySymbol.ownerDocument]: Document;
+      [PropertySymbol.start]: { node: Node; offset: number };
+      [PropertySymbol.end]: { node: Node; offset: number };
+    };
+    internals[PropertySymbol.ownerDocument] = this;
+    internals[PropertySymbol.start] = { node: this, offset: 0 };
+    internals[PropertySymbol.end] = { node: this, offset: 0 };
+    return range;
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -81,8 +97,9 @@ function searchDouble(sections: ReturnType<typeof searchSection>[]) {
   return { engine, book, ...rest };
 }
 
-function searchSection(index: number, href = `chapter${index}.xhtml`) {
-  return { index, href, load: vi.fn().mockResolvedValue(undefined), find: vi.fn().mockReturnValue([{ cfi: `${cfi}-${index}`, excerpt: `Needle in chapter ${index}` }]), unload: vi.fn() };
+function searchSection(index: number, href = `chapter${index}.xhtml`, markup = `<p>Needle in chapter ${index}</p>`) {
+  const document = new DOMParser().parseFromString(`<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter</title></head><body>${markup}</body></html>`, "application/xhtml+xml");
+  return { index, href, document: document as Document | undefined, load: vi.fn().mockResolvedValue(document.documentElement), cfiFromRange: vi.fn((_range: Range) => `${cfi}-${index}`), unload: vi.fn() };
 }
 
 describe("whole-book search", () => {
@@ -94,37 +111,159 @@ describe("whole-book search", () => {
     book.load.mockImplementation(function (this: unknown) { expect(this).toBe(book); return Promise.resolve(); });
     for (const section of sections) {
       section.load.mockImplementation(async request => { events.push(`load ${section.index}`); await request(section.href); });
-      section.find.mockImplementation(query => { expect(query).toBe("Needle"); events.push(`find ${section.index}`); return [{ cfi: `${cfi}-${section.index}`, excerpt: `Needle in chapter ${section.index}` }]; });
+      section.cfiFromRange.mockImplementation(range => { expect(range.toString()).toBe("Needle"); events.push(`range ${section.index}`); return `${cfi}-${section.index}`; });
       section.unload.mockImplementation(() => { events.push(`unload ${section.index}`); });
     }
-    expect(await engine.search("  Needle  ")).toEqual([
+    expect(await engine.search("  Needle  ")).toEqual({ hits: [
       { cfi: `${cfi}-0`, excerpt: "Needle in chapter 0", chapter: "First chapter", sectionHref: "chapter0.xhtml", sectionIndex: 0 },
       { cfi: `${cfi}-1`, excerpt: "Needle in chapter 1", chapter: "Nested chapter", sectionHref: "chapter1.xhtml", sectionIndex: 1 },
       { cfi: `${cfi}-2`, excerpt: "Needle in chapter 2", chapter: "正文", sectionHref: "chapter2.xhtml", sectionIndex: 2 },
-    ]);
-    expect(events).toEqual(["load 0", "find 0", "unload 0", "load 1", "find 1", "unload 1", "load 2", "find 2", "unload 2"]);
+    ], failedSections: 0 });
+    expect(events).toEqual(["load 0", "range 0", "unload 0", "load 1", "range 1", "unload 1", "load 2", "range 2", "unload 2"]);
     expect(book.load).toHaveBeenCalledTimes(3);
   });
 
-  it("releases failed chapters and continues after loading, searching, or unloading errors", async () => {
+  it("creates exact ranges and plain-text excerpts for repeated matches across nested inline tags", async () => {
+    const section = searchSection(0, undefined, '<p>前言：真正的<strong>意识</strong>值得探索。真正的<em><span>意</span><a href="#">识</a></em>在此。</p>');
+    const doc = section.document!;
+    const paragraph = doc.querySelector("p")!;
+    const createRange = vi.spyOn(doc, "createRange");
+    const { engine } = searchDouble([section]);
+    const result = await engine.search("真正的意识");
+    expect(result.failedSections).toBe(0);
+    expect(result.hits).toHaveLength(2);
+    expect(createRange).toHaveBeenCalledTimes(2);
+    expect(result.hits.map(hit => hit.cfi)).toEqual([`${cfi}-0`, `${cfi}-0`]);
+    for (const hit of result.hits) {
+      expect(hit.excerpt).toContain("前言：真正的意识值得探索。真正的意识在此。");
+      expect(hit.excerpt).not.toMatch(/<(?:strong|em|span|a)\b/);
+    }
+    const [first, second] = section.cfiFromRange.mock.calls.map(([range]) => range);
+    expect(first.startContainer).toBe(paragraph.firstChild);
+    expect(first.startOffset).toBe(3);
+    expect(first.endContainer).toBe(paragraph.querySelector("strong")!.firstChild);
+    expect(first.endOffset).toBe(2);
+    expect(second.startContainer).toBe(paragraph.childNodes[2]);
+    expect(second.startOffset).toBe(5);
+    expect(second.endContainer).toBe(paragraph.querySelector("a")!.firstChild);
+    expect(second.endOffset).toBe(1);
+    expect([first.toString(), second.toString()]).toEqual(["真正的意识", "真正的意识"]);
+  });
+
+  it("finds every case-insensitive occurrence within one text node with distinct offsets", async () => {
+    const section = searchSection(0, undefined, "<p>Needle needle NEEDLE</p>");
+    const { engine } = searchDouble([section]);
+    const result = await engine.search("needle");
+    expect(result.hits).toHaveLength(3);
+    expect(section.cfiFromRange.mock.calls.map(([range]) => [range.startOffset, range.endOffset, range.toString()])).toEqual([
+      [0, 6, "Needle"], [7, 13, "needle"], [14, 20, "NEEDLE"],
+    ]);
+  });
+
+  it("searches literal punctuation and preserves source offsets after Unicode case expansion", async () => {
+    const section = searchSection(0, undefined, "<p>İ a+b and <strong>a+</strong><span>b</span>.</p>");
+    const { engine } = searchDouble([section]);
+    expect((await engine.search("a+b")).hits).toHaveLength(2);
+    const ranges = section.cfiFromRange.mock.calls.map(([range]) => range);
+    expect(ranges.map(range => range.toString())).toEqual(["a+b", "a+b"]);
+    expect(ranges[0].startOffset).toBe(2);
+    expect(ranges[0].endOffset).toBe(5);
+    expect(ranges[1].startOffset).toBe(0);
+    expect(ranges[1].endOffset).toBe(1);
+  });
+
+  it("matches at inline-node boundaries without spanning separate blocks or line breaks", async () => {
+    const section = searchSection(0, undefined, "<p>真正的</p><p>意识</p><div>真正的<span>意识</span></div><div>真正的<br/>意识</div><div>真正的<div>意识</div></div>");
+    const { engine } = searchDouble([section]);
+    const result = await engine.search("真正的意识");
+    expect(result.hits).toHaveLength(1);
+    const range = section.cfiFromRange.mock.calls[0][0];
+    expect(range.startOffset).toBe(0);
+    expect(range.endOffset).toBe(2);
+    expect(range.toString()).toBe("真正的意识");
+    expect(range.startContainer.parentElement?.localName).toBe("div");
+    expect(range.endContainer.parentElement?.localName).toBe("span");
+  });
+
+  it("does not search document metadata, scripts, or styles", async () => {
+    const section = searchSection(0, undefined, "<style>needle</style><script>needle</script><p>Readable needle.</p>");
+    section.document!.querySelector("title")!.textContent = "needle";
+    const { engine } = searchDouble([section]);
+    expect((await engine.search("needle")).hits).toHaveLength(1);
+    expect(section.cfiFromRange.mock.calls[0][0].startContainer.parentElement?.localName).toBe("p");
+  });
+
+  it("releases failed chapters and reports incomplete results after loading or searching errors", async () => {
     const sections = [searchSection(0), searchSection(1), searchSection(2), searchSection(3)];
     sections[0].load.mockRejectedValue(new Error("Missing chapter"));
-    sections[1].find.mockImplementation(() => { throw new Error("Invalid chapter"); });
+    sections[1].cfiFromRange.mockImplementation(() => { throw new Error("Invalid chapter"); });
     sections[2].unload.mockImplementation(() => { throw new Error("Release failed"); });
     const { engine } = searchDouble(sections);
-    expect((await engine.search("needle")).map(hit => hit.sectionIndex)).toEqual([2, 3]);
-    expect(sections[0].find).not.toHaveBeenCalled();
+    const result = await engine.search("needle");
+    expect(result.hits.map(hit => hit.sectionIndex)).toEqual([2, 3]);
+    expect(result.failedSections).toBe(2);
+    expect(sections[0].cfiFromRange).not.toHaveBeenCalled();
     for (const section of sections) expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports incomplete search even when readable chapters have no matches", async () => {
+    const sections = [searchSection(0), searchSection(1, undefined, "<p>No matching text.</p>")];
+    sections[0].load.mockRejectedValue(new Error("Missing chapter"));
+    const { engine } = searchDouble(sections);
+    expect(await engine.search("needle")).toEqual({ hits: [], failedSections: 1 });
+    for (const section of sections) expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects with a localizable error when every chapter fails", async () => {
+    const sections = [searchSection(0), searchSection(1)];
+    for (const section of sections) section.load.mockRejectedValue(new Error("Missing chapter"));
+    const { engine } = searchDouble(sections);
+    await expect(engine.search("needle")).rejects.toThrow("无法读取任何章节，全文搜索失败。");
+    for (const section of sections) expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a missing parsed document as a chapter failure instead of an empty result", async () => {
+    const section = searchSection(0);
+    section.document = undefined;
+    const { engine } = searchDouble([section]);
+    await expect(engine.search("needle")).rejects.toThrow("无法读取任何章节，全文搜索失败。");
+    expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts XML parse errors as chapter failures", async () => {
+    const section = searchSection(0);
+    section.document!.querySelector("body")!.append(section.document!.createElement("parsererror"));
+    const { engine } = searchDouble([section]);
+    await expect(engine.search("needle")).rejects.toThrow("无法读取任何章节，全文搜索失败。");
+    expect(section.cfiFromRange).not.toHaveBeenCalled();
+    expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards an entire chapter when a later match cannot be converted to a CFI", async () => {
+    const sections = [searchSection(0, undefined, "<p>needle needle</p>"), searchSection(1)];
+    sections[0].cfiFromRange.mockReturnValueOnce("partial-cfi").mockImplementationOnce(() => { throw new Error("Broken CFI"); });
+    const { engine } = searchDouble(sections);
+    const result = await engine.search("needle");
+    expect(result.failedSections).toBe(1);
+    expect(result.hits.map(hit => hit.sectionIndex)).toEqual([1]);
+    for (const section of sections) expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds overlapping matches across inline text nodes", async () => {
+    const section = searchSection(0, undefined, "<p>ba<strong>na</strong>na</p>");
+    const { engine } = searchDouble([section]);
+    expect((await engine.search("ana")).hits).toHaveLength(2);
+    expect(section.cfiFromRange.mock.calls.map(([range]) => range.toString())).toEqual(["ana", "ana"]);
   });
 
   it("does not load chapters for blank queries or a closed book", async () => {
     const section = searchSection(0);
     const { engine } = searchDouble([section]);
-    expect(await engine.search(" \n\t ")).toEqual([]);
+    expect(await engine.search(" \n\t ")).toEqual({ hits: [], failedSections: 0 });
     engine.destroy();
-    expect(await engine.search("needle")).toEqual([]);
+    expect(await engine.search("needle")).toEqual({ hits: [], failedSections: 0 });
     expect(section.load).not.toHaveBeenCalled();
-    expect(await new EpubEngine(document.createElement("div")).search("needle")).toEqual([]);
+    expect(await new EpubEngine(document.createElement("div")).search("needle")).toEqual({ hits: [], failedSections: 0 });
   });
 
   it.each(["disposed", "generation"])("discards results and releases the loading chapter when %s changes", async reason => {
@@ -136,32 +275,59 @@ describe("whole-book search", () => {
     if (reason === "disposed") engine.destroy();
     else Object.assign(engine, { generation: 1 });
     finishLoad();
-    expect(await pending).toEqual([]);
-    expect(sections[0].find).not.toHaveBeenCalled();
+    expect(await pending).toEqual({ hits: [], failedSections: 0 });
+    expect(sections[0].cfiFromRange).not.toHaveBeenCalled();
     expect(sections[0].unload).toHaveBeenCalledTimes(1);
     expect(sections[1].load).not.toHaveBeenCalled();
   });
 
-  it("finds every occurrence across real archive chapters and unloads their detached documents", async () => {
+  it("discards a load rejection after cancellation without reporting all chapters failed", async () => {
+    const section = searchSection(0);
+    let rejectLoad!: (reason: Error) => void;
+    section.load.mockReturnValue(new Promise<void>((_resolve, reject) => { rejectLoad = reject; }));
+    const { engine } = searchDouble([section]);
+    const pending = engine.search("needle");
+    engine.destroy();
+    rejectLoad(new Error("Cancelled chapter"));
+    expect(await pending).toEqual({ hits: [], failedSections: 0 });
+    expect(section.unload).toHaveBeenCalledTimes(1);
+  });
+
+  it("finds every occurrence across real archive chapters, round-trips cross-inline CFIs, and unloads documents", async () => {
     const zip = new JSZip();
     zip.file("mimetype", "application/epub+zip");
     zip.file("META-INF/container.xml", `<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="package.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
     zip.file("package.opf", `<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">search-test</dc:identifier><dc:title>Search</dc:title><dc:language>en</dc:language></metadata><manifest><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>`);
-    zip.file("one.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>First</title></head><body><p>Needle, then another NEEDLE.</p></body></html>`);
+    zip.file("one.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>First</title></head><body><p>Needle, then another NEEDLE.</p><p>前文：真正的<strong>意识</strong>与真正的<em>意识</em>。</p></body></html>`);
     zip.file("two.xhtml", `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Second</title></head><body><p>A final needle.</p><script>needle</script></body></html>`);
     const rendition = { on: vi.fn(), off: vi.fn(), themes: { default: vi.fn() }, display: vi.fn().mockResolvedValue(undefined), resize: vi.fn() };
     vi.spyOn(Book.prototype, "renderTo").mockReturnValue(rendition as unknown as Rendition);
     const engine = new EpubEngine(document.createElement("div"));
     await engine.mount(await zip.generateAsync({ type: "arraybuffer" }));
-    const hits = await engine.search("needle");
+    const { hits, failedSections } = await engine.search("needle");
+    expect(failedSections).toBe(0);
     expect(hits.map(hit => hit.sectionIndex)).toEqual([0, 0, 1]);
     expect(hits.map(hit => hit.chapter)).toEqual(["第 1 节", "第 1 节", "第 2 节"]);
     expect(new Set(hits.map(hit => hit.cfi)).size).toBe(3);
+    const inline = await engine.search("真正的意识");
+    expect(inline.failedSections).toBe(0);
+    expect(inline.hits).toHaveLength(2);
+    expect(new Set(inline.hits.map(hit => hit.cfi)).size).toBe(2);
+    expect(inline.hits[0].excerpt).toContain("前文：真正的意识与真正的意识。");
     const book = (engine as unknown as { book: Book }).book;
     book.spine.each((section: { document?: Document; contents?: Element }) => {
       expect(section.document).toBeUndefined();
       expect(section.contents).toBeUndefined();
     });
+    const section = book.spine.get(0);
+    await section.load(book.load.bind(book));
+    for (const hit of inline.hits) {
+      const range = new EpubCFI(hit.cfi).toRange(section.document);
+      expect(range.toString()).toBe("真正的意识");
+      expect(range.startContainer.nodeType).toBe(Node.TEXT_NODE);
+      expect(range.endContainer.nodeType).toBe(Node.TEXT_NODE);
+    }
+    section.unload();
     engine.destroy();
   });
 });

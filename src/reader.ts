@@ -2,7 +2,7 @@ import { compactRange } from './migrate';
 import { chooseLegacyExcerpts } from './migration-ui';
 import { FileView, TFile, WorkspaceLeaf, Menu, Modal, setIcon } from 'obsidian';
 import type LeafmarkPlugin from './main';
-import { EpubEngine, type ReaderSelection, type ReaderSearchHit, type ChapterEntry } from './engine';
+import { EpubEngine, type ReaderSelection, type ReaderSearchHit, type ReaderSearchResult, type ChapterEntry } from './engine';
 import type { Annotation, BookState } from './model';
 import { friendlyError, onLanguageChange, t, type TranslationKey } from './i18n';
 
@@ -34,11 +34,13 @@ export class ReaderView extends FileView {
   private searchQuery='';
   private searchTerm='';
   private searchHits:ReaderSearchHit[]=[];
+  private searchFailedSections=0;
+  private searchError?:()=>string;
   private searchHitIndex=-1;
   private searchRunning=false;
   private searchGeneration=0;
   private searchNavigation=0;
-  private searchTask:Promise<ReaderSearchHit[]>=Promise.resolve([]);
+  private searchTask:Promise<ReaderSearchResult>=Promise.resolve({hits:[],failedSections:0});
   private floating?:HTMLElement;
   private pendingSelection?:ReaderSelection;
   private retryAction?:()=>Promise<void>;
@@ -310,7 +312,12 @@ export class ReaderView extends FileView {
   private resetBookSearch(){
     ++this.searchGeneration;++this.searchNavigation;
     this.searchQuery='';this.searchTerm='';this.searchHits=[];this.searchHitIndex=-1;this.searchRunning=false;
+    this.searchFailedSections=0;this.clearSearchError();
     this.engine?.setSearchHighlight();
+  }
+  private clearSearchError(){
+    if(this.searchError&&this.statusMessage===this.searchError)this.setStatus(()=>t(this.bookLoaded?(this.state?.canvasPath?'canvasConnected':'noCanvas'):'startReading'));
+    this.searchError=undefined;
   }
   private clearBookSearch(){this.resetBookSearch();if(this.panelMode==='search')this.renderPanel();this.focusSearch();}
   private async runBookSearch(query:string){
@@ -319,13 +326,18 @@ export class ReaderView extends FileView {
     const generation=++this.searchGeneration;
     const current=()=>generation===this.searchGeneration&&engine===this.engine&&this.bookLoaded;
     this.searchQuery=term;this.searchTerm=term;this.searchHits=[];this.searchHitIndex=-1;this.searchRunning=true;
+    this.searchFailedSections=0;this.clearSearchError();
     engine.setSearchHighlight();if(this.panelMode==='search')this.renderPanel();
     // A cleared search may still be loading a section; let it unload before another search uses it.
-    const task=this.searchTask.catch(()=>[]).then(()=>current()?engine.search(term):[]);this.searchTask=task;
+    const task=this.searchTask.catch(()=>({hits:[],failedSections:0})).then(()=>current()?engine.search(term):{hits:[],failedSections:0});this.searchTask=task;
     try{
-      const hits=await task;if(!current())return;
-      this.searchHits=hits;if(hits.length)await this.jumpToSearchHit(0);
-    }catch(e){if(current())throw e;}
+      const result=await task;if(!current())return;
+      this.searchHits=result.hits;this.searchFailedSections=result.failedSections;
+      if(result.hits.length){
+        try{await this.jumpToSearchHit(0);}
+        catch(e){if(current())this.fail(e,()=>this.jumpToSearchHit(0));}
+      }
+    }catch(e){if(current()){this.searchError=()=>friendlyError(e);this.fail(this.searchError,()=>this.runBookSearch(term));}}
     finally{if(current()){this.searchRunning=false;if(this.panelMode==='search')this.renderPanel();}}
   }
   private async jumpToSearchHit(index:number){
@@ -345,7 +357,14 @@ export class ReaderView extends FileView {
     if(this.panelMode!=='search')return;
     this.panelContent.querySelectorAll<HTMLElement>('.lm-search-result').forEach((row,index)=>{const active=index===this.searchHitIndex;row.toggleClass('is-active',active);row.setAttribute('aria-current',String(active));});
     const status=this.panelContent.querySelector('.lm-search-status');
-    if(status&&!this.searchRunning&&this.searchHits.length)status.textContent=t('searchCount',{current:this.searchHitIndex+1,total:this.searchHits.length});
+    if(status&&!this.searchRunning)status.textContent=this.searchStatus();
+  }
+  private searchStatus(){
+    if(this.searchRunning)return t('searching');
+    if(this.searchError)return this.searchError();
+    if(this.searchHits.length)return t(this.searchFailedSections?'searchCountIncomplete':'searchCount',{current:this.searchHitIndex+1,total:this.searchHits.length});
+    if(this.searchFailedSections)return t('searchIncomplete',{count:this.searchFailedSections});
+    return t(this.searchTerm?'noSearchMatches':'searchHint');
   }
   private appendSearchExcerpt(parent:HTMLElement,excerpt:string,query:string){
     const term=query.trim();let start=0;
@@ -376,8 +395,8 @@ export class ReaderView extends FileView {
     for(const [key,delta,icon] of [['previousMatch',-1,'chevron-up'],['nextMatch',1,'chevron-down']] as const){
       const button=this.uiButton(nav,key,()=>this.navigateSearchHit(delta),icon);button.disabled=this.searchRunning||!this.searchHits.length;
     }
-    const status=this.searchRunning?t('searching'):this.searchHits.length?t('searchCount',{current:this.searchHitIndex+1,total:this.searchHits.length}):t(this.searchTerm?'noSearchMatches':'searchHint');
-    navigation.createDiv({cls:'lm-search-status',text:status,attr:{role:'status','aria-live':'polite'}});
+    navigation.createDiv({cls:'lm-search-status',text:this.searchStatus(),attr:{role:'status','aria-live':'polite'}});
+    if(!this.searchRunning&&this.searchFailedSections&&this.searchHits.length)panel.createDiv({cls:'lm-search-warning',text:t('searchIncomplete',{count:this.searchFailedSections}),attr:{role:'status'}});
     const list=panel.createDiv({cls:'lm-search-results',attr:{role:'region','aria-label':t('searchResults')}});
     this.searchHits.forEach((hit,index)=>{
       const row=this.button(list,hit.chapter,()=>this.run(()=>this.jumpToSearchHit(index)));row.addClass('lm-search-result');row.empty();row.removeAttribute('aria-label');

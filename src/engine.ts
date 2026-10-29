@@ -27,6 +27,11 @@ export interface ReaderSearchHit {
   sectionIndex: number;
 }
 
+export interface ReaderSearchResult {
+  hits: ReaderSearchHit[];
+  failedSections: number;
+}
+
 export interface ReaderAppearance {
   fontSize: number;
   fontFamily: string;
@@ -112,6 +117,66 @@ function errorOf(value: unknown): Error {
   if (value instanceof Error) return value;
   if (value && typeof value === "object" && "message" in value && typeof value.message === "string") return new Error(value.message);
   return new Error(String(value));
+}
+
+// Detached EPUB documents have no computed layout; semantic blocks keep unrelated paragraphs apart.
+const SEARCH_BREAKS = new Set([
+  "address", "article", "aside", "blockquote", "br", "caption", "center", "dd", "details", "dialog", "div", "dl", "dt",
+  "fieldset", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr",
+  "li", "main", "menu", "nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+]);
+const SEARCH_IGNORED = new Set(["script", "style", "noscript", "template"]);
+
+function searchSection(section: Section, query: string): Pick<ReaderSearchHit, "cfi" | "excerpt">[] {
+  const document = section.document;
+  const body = document?.querySelector("body");
+  if (!body || document.querySelector("parsererror")) throw new Error("无法读取章节正文。");
+  const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  const hits: Pick<ReaderSearchHit, "cfi" | "excerpt">[] = [];
+  let text = "";
+  let nodes: { node: Text; start: number; end: number }[] = [];
+  const flush = () => {
+    pattern.lastIndex = 0;
+    let startIndex = 0;
+    let endIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text))) {
+      const start = match.index;
+      const end = start + match[0].length;
+      while (nodes[startIndex].end <= start) startIndex++;
+      endIndex = Math.max(startIndex, endIndex);
+      while (nodes[endIndex].end < end) endIndex++;
+      const range = document.createRange();
+      range.setStart(nodes[startIndex].node, start - nodes[startIndex].start);
+      range.setEnd(nodes[endIndex].node, end - nodes[endIndex].start);
+      const from = Math.max(0, start - 75);
+      const to = Math.min(text.length, end + 75);
+      const excerpt = text.length <= 150 ? text : `${from ? "..." : ""}${text.slice(from, to)}${to < text.length ? "..." : ""}`;
+      hits.push({ cfi: section.cfiFromRange(range), excerpt });
+      pattern.lastIndex = start + 1;
+    }
+    text = "";
+    nodes = [];
+  };
+  const visit = (node: Node) => {
+    if (node.nodeType === 3) {
+      const value = (node as Text).data;
+      if (value) {
+        nodes.push({ node: node as Text, start: text.length, end: text.length + value.length });
+        text += value;
+      }
+    } else if (node.nodeType === 1) {
+      const name = (node as Element).localName.toLowerCase();
+      if (SEARCH_IGNORED.has(name)) { flush(); return; }
+      const boundary = SEARCH_BREAKS.has(name);
+      if (boundary) flush();
+      for (const child of Array.from(node.childNodes)) visit(child);
+      if (boundary) flush();
+    }
+  };
+  visit(body);
+  flush();
+  return hits;
 }
 
 class ReaderBook extends Book {
@@ -241,32 +306,35 @@ export class EpubEngine {
     return this.chapters;
   }
 
-  async search(query: string): Promise<ReaderSearchHit[]> {
+  async search(query: string): Promise<ReaderSearchResult> {
     query = query.trim();
     const book = this.book;
-    if (!query || !book || this.disposed) return [];
+    const empty: ReaderSearchResult = { hits: [], failedSections: 0 };
+    if (!query || !book || this.disposed) return empty;
     const generation = this.generation;
     const active = () => !this.disposed && generation === this.generation;
     const sections: Section[] = [];
     book.spine.each((section: Section) => sections.push(section));
     const hits: ReaderSearchHit[] = [];
+    let failedSections = 0;
     for (const section of sections) {
-      if (!active()) return [];
+      if (!active()) return empty;
       try {
         // Upstream declares a synchronous document; load actually resolves the root element.
         const load = section.load.bind(section) as unknown as (request?: Book["load"]) => Promise<Element>;
         await load(book.load.bind(book));
-        if (!active()) return [];
-        // The upstream declaration says Element[]; the public API returns { cfi, excerpt }[].
-        const matches = section.find(query) as unknown as Pick<ReaderSearchHit, "cfi" | "excerpt">[];
+        if (!active()) return empty;
+        const matches = searchSection(section, query);
         for (const match of matches) hits.push({ ...match, chapter: this.chapterLabel(section.href), sectionHref: section.href, sectionIndex: section.index });
       } catch {
-        // One unreadable chapter must not prevent searching the rest of the book.
+        failedSections++;
       } finally {
         try { section.unload?.(); } catch { /* Continue even if this chapter cannot be released. */ }
       }
     }
-    return active() ? hits : [];
+    if (!active()) return empty;
+    if (sections.length && failedSections === sections.length) throw new Error("无法读取任何章节，全文搜索失败。");
+    return { hits, failedSections };
   }
 
   async goToCFI(cfi: string): Promise<void> {
